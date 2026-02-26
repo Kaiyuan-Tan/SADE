@@ -75,7 +75,7 @@ class BaseTrainer:
         not_improved_count = 0
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
-            pdb.set_trace()
+            # pdb.set_trace()
 
             # save logged informations into log dict
             log = {'epoch': epoch}

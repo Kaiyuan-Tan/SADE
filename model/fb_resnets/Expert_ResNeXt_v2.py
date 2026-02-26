@@ -101,12 +101,12 @@ class Bottleneck(nn.Module):
 
         return out
 
-class ResNext(nn.Module):
+class ResNeXt_v2(nn.Module):
 
     def __init__(self, block, layers, num_experts, groups=1, width_per_group=64, dropout=None, num_classes=1000, use_norm=False, reduce_dimension=False, layer3_output_dim=None, layer4_output_dim=None, s=30):
         self.inplanes = 64
         self.num_experts = num_experts
-        super(ResNext, self).__init__()
+        super(ResNeXt_v2, self).__init__()
 
         self.groups = groups
         self.base_width = width_per_group

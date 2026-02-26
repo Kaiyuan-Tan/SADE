@@ -5,6 +5,7 @@ from base import BaseTrainer
 from utils import inf_loop, MetricTracker, load_state_dict, rename_parallel_state_dict, autocast, use_fp16
 import model.model as module_arch
 import pdb
+import torch.nn.functional as F
 
 class Trainer(BaseTrainer):
     """
@@ -174,3 +175,155 @@ class Trainer(BaseTrainer):
             current = batch_idx
             total = self.len_epoch
         return base.format(current, total, 100.0 * current / total)
+
+class PaCoTrainer(BaseTrainer):
+    """
+    Trainer class
+    """
+    def __init__(self, model, criterion, metric_ftns, optimizer, config, data_loader,
+                 valid_data_loader=None, lr_scheduler=None, len_epoch=None):
+        super().__init__(model, criterion, metric_ftns, optimizer, config)
+        # pdb.set_trace()
+        self.config = config
+
+        # add_extra_info will return info about individual experts. This is crucial for individual loss. If this is false, we can only get a final mean logits.
+        self.add_extra_info = config._config.get('add_extra_info', False)
+        print("self.add_extra_info",self.add_extra_info)
+
+        self.data_loader = data_loader
+        if len_epoch is None:
+            # epoch-based training
+            self.len_epoch = len(self.data_loader)
+        else:
+            # iteration-based training
+            self.data_loader = inf_loop(data_loader)
+            self.len_epoch = len_epoch
+
+        if use_fp16:
+            self.logger.warn("FP16 is enabled. This option should be used with caution unless you make sure it's working and we do not provide guarantee.")
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+        else:
+            self.scaler = None
+
+        self.valid_data_loader = valid_data_loader
+        self.do_validation = self.valid_data_loader is not None
+        self.lr_scheduler = lr_scheduler
+        self.log_step = int(np.sqrt(data_loader.batch_size))
+
+        self.train_metrics = MetricTracker('loss', 'ce_loss', 'supcon_loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
+        self.valid_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
+
+    def _train_epoch(self, epoch):
+        """
+        Training logic for an epoch
+
+        :param epoch: Integer, current training epoch.
+        :return: A log that contains average loss and metric in this epoch.
+        """
+        self.model.train()
+        self.train_metrics.reset()
+
+        if hasattr(self.criterion, "_hook_before_epoch"):
+            self.criterion._hook_before_epoch(epoch)
+
+        for batch_idx, (data, labels) in enumerate(self.data_loader):
+
+            im_q = data[0].to(self.device)
+            im_k = data[1].to(self.device)
+            labels = labels.to(self.device)
+
+            self.optimizer.zero_grad()
+
+            with autocast():
+                all_features, target, all_logits = self.model(im_q, im_k, labels)
+
+
+                loss, expert_losses = self.criterion(all_features, target, all_logits)
+                ce_loss = torch.tensor(expert_losses[0]).to(self.device) # 以专家1作为代表或均值
+                supcon_loss = torch.tensor(sum(expert_losses)).to(self.device) # 仅用于占位记录
+
+            if not use_fp16:
+                loss.backward()
+                self.optimizer.step()
+            else:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+
+            self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
+            self.train_metrics.update('loss', loss.item())
+            self.train_metrics.update('ce_loss', ce_loss.item())
+            self.train_metrics.update('supcon_loss', supcon_loss.item())
+
+            batch_size = data[0].shape[0] if isinstance(data, list) else data.shape[0]
+            eval_output = all_logits[:, 0, :]
+            eval_pred = eval_output[:batch_size]
+            eval_target = target[:batch_size]
+            for met in self.metric_ftns:
+                self.train_metrics.update(met.__name__, met(eval_pred, eval_target, return_length=True))
+
+            if batch_idx % self.log_step == 0:
+                self.logger.debug('Train Epoch: {} {} Loss: {:.6f} CE Loss: {:.6f} SUPCON Loss: {:.6f} max group LR: {:.4f} min group LR: {:.4f}'.format(
+                    epoch,
+                    self._progress(batch_idx),
+                    loss.item(),
+                    ce_loss.item(),
+                    supcon_loss.item(),
+                    max([param_group['lr'] for param_group in self.optimizer.param_groups]),
+                    min([param_group['lr'] for param_group in self.optimizer.param_groups])))
+                self.writer.add_image('input', make_grid(data[0].cpu(), nrow=8, normalize=True))
+
+            if batch_idx == self.len_epoch:
+                break
+        log = self.train_metrics.result()
+
+        if self.do_validation:
+            val_log = self._valid_epoch(epoch)
+            log.update(**{'val_'+k : v for k, v in val_log.items()})
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+        return log
+
+    def _valid_epoch(self, epoch):
+        """
+        Validate after training an epoch
+
+        :param epoch: Integer, current training epoch.
+        :return: A log that contains information about validation
+        """
+        self.model.eval()
+        self.valid_metrics.reset()
+        with torch.no_grad():
+           
+            for batch_idx, (data, target) in enumerate(self.valid_data_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                output = self.model(data)
+                loss = F.cross_entropy(output, target)
+
+                # if isinstance(output, dict):
+                    # output = output["output"]
+                # loss = self.criterion(output, target)
+
+                self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
+                self.valid_metrics.update('loss', loss.item())
+                for met in self.metric_ftns:
+                    self.valid_metrics.update(met.__name__, met(output, target, return_length=True))
+                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+
+        # add histogram of model parameters to the tensorboard
+        for name, p in self.model.named_parameters():
+            self.writer.add_histogram(name, p, bins='auto')
+        return self.valid_metrics.result()
+
+    def _progress(self, batch_idx):
+        base = '[{}/{} ({:.0f}%)]'
+        if hasattr(self.data_loader, 'n_samples'):
+            current = batch_idx * self.data_loader.batch_size
+            total = self.data_loader.n_samples
+        else:
+            current = batch_idx
+            total = self.len_epoch
+        return base.format(current, total, 100.0 * current / total)
+

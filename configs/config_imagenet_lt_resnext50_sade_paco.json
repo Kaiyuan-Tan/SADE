@@ -3,21 +3,21 @@
     "n_gpu": 2,
 
     "arch": {
-        "type": "ResNeXt50Model",
+        "type": "PaCo_TADE",
         "args": {
             "num_classes": 1000,
-            "reduce_dimension": true,
-            "use_norm": true,
-            "returns_feat": true,
-            "num_experts": 3
+            "num_experts": 3,
+            "K": 8192,
+            "mlp": true
         }
     },
     "data_loader": {
         "type": "ImageNetLTDataLoader",
         "args":{
-            "data_dir": "./data/imagenet",
+            "data_dir": "/scratch/ktan24/documents/SAGE_dataset/imagenet",
             "batch_size": 64,
             "shuffle": true,
+            "drop_last": true,
             "num_workers": 12
         }
     },
@@ -32,9 +32,11 @@
     },
     "add_extra_info": true,
     "loss": {
-        "type": "DiverseExpertLoss",
+        "type": "MultiExpertPaCoLoss",
         "args":{
-             "tau": 2
+             "alpha": 0.05,
+             "smooth": 0.1,
+             "K": 8192
         }
     },
     "metrics": [
@@ -49,7 +51,7 @@
     },
     "trainer": {
         "epochs": 180,
-        "save_dir": "saved/imagenet/sade_e180_inv2_bs64_lr0.025",
+        "save_dir": "saved/imagenet/paco_e180_inv2_bs256_lr0.025",
         "save_period": 180,
         "verbosity": 2,
         "monitor": "max val_accuracy",

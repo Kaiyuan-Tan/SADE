@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-from model.fb_resnets import Expert_ResNet_v2
-from model.fb_resnets.PaCo_builder import PaCo_TADE
-from model.new_loss import MultiExpertPaCoLoss
+from model.fb_resnets import Expert_ResNeXt_v2
+from model.model import PaCo_TADE
+from model.loss import MultiExpertPaCoLoss
 
 def test_paco_tade_pipeline():
     print("=== TADE + PaCo ===")
@@ -14,14 +14,14 @@ def test_paco_tade_pipeline():
     queue_size = 256  
 
     print("1. ResNext Encoder...")
-    base_encoder = Expert_ResNet_v2.ResNext(Expert_ResNet_v2.Bottleneck, [3, 4, 6, 3], groups=32, width_per_group=4, dropout=None, num_classes=num_classes,  num_experts=num_experts)
+    # base_encoder = Expert_ResNet_v2.ResNext(Expert_ResNet_v2.Bottleneck, [3, 4, 6, 3], groups=32, width_per_group=4, dropout=None, num_classes=num_classes,  num_experts=num_experts)
 
     print("2. PaCo Builder...")
     model = PaCo_TADE(
-        base_encoder=base_encoder, 
         dim=moco_dim, 
         K=queue_size, 
         mlp=True, 
+        num_experts = num_experts,
         num_classes=num_classes
     )
 
