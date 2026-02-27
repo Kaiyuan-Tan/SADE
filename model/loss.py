@@ -817,9 +817,10 @@ class MultiTaskBLoss(nn.Module):
         return loss_ce + self.alpha * loss
 
 class MultiExpertPaCoLoss(nn.Module):
-    def __init__(self, alpha, beta=1.0, gamma=1.0, supt=1.0, temperature=1.0, base_temperature=None, K=8192, num_classes=1000, smooth=0.0, cls_num_list=None):
+    def __init__(self, alpha, tau = 1.0, beta=1.0, gamma=1.0, supt=1.0, temperature=0.2, base_temperature=None, K=8192, num_classes=1000, smooth=0.0, cls_num_list=None):
         super(MultiExpertPaCoLoss, self).__init__()
         self.temperature = temperature
+        self.tau = tau
         self.beta = beta
         self.gamma = gamma
         self.supt = supt
@@ -831,11 +832,28 @@ class MultiExpertPaCoLoss(nn.Module):
         self.smooth = smooth
 
         self.weight = None
+        if cls_num_list is not None:
+            self.cal_weight_for_classes(cls_num_list)
 
     def cal_weight_for_classes(self, cls_num_list):
-        cls_num_list = torch.Tensor(cls_num_list).view(1, self.num_classes)
-        self.weight = cls_num_list / cls_num_list.sum()
-        self.weight = self.weight.to(torch.device('cuda'))
+            cls_num_list = torch.Tensor(cls_num_list).float().view(1, self.num_classes)
+            
+            # 1. Forward
+            weight_forward = torch.ones_like(cls_num_list)
+            
+            # 2. Uniform 
+            weight_uniform = 1.0 / (cls_num_list + 1e-9)
+            weight_uniform = weight_uniform / weight_uniform.mean()
+            
+            # 3. Backward 
+            weight_backward = cls_num_list.clone()
+            weight_backward = weight_backward / weight_backward.mean()
+            
+            self.weight = torch.cat(
+                [weight_forward, weight_uniform, weight_backward], 
+                dim=0
+            )
+            self.weight = self.weight.to(torch.device('cuda'))
 
     def forward(self, all_features, labels=None, all_logits=None):
 
@@ -848,10 +866,11 @@ class MultiExpertPaCoLoss(nn.Module):
             sup_logits = all_logits[:, i, :]  # [N, num_classes]
 
             device = features.device
-            batch_size = features.shape[0] - self.K
+            # batch_size = features.shape[0] - self.K
             batch_size = sup_logits.shape[0]
-            labels = labels.contiguous().view(-1, 1)
-            mask = torch.eq(labels[:batch_size], labels.T).float().to(device)
+            # labels = labels.contiguous().view(-1, 1)
+            curr_labels = labels.contiguous().view(-1, 1)
+            mask = torch.eq(curr_labels[:batch_size], curr_labels.T).float().to(device)
 
             # compute logits
             anchor_dot_contrast = torch.div(
@@ -861,7 +880,8 @@ class MultiExpertPaCoLoss(nn.Module):
 
             # add supervised logits
             if self.weight is not None:
-                anchor_dot_contrast = torch.cat(( (sup_logits + torch.log(self.weight + 1e-9) ) / self.supt, anchor_dot_contrast), dim=1)
+                curr_weight = self.weight[i]
+                anchor_dot_contrast = torch.cat(( (sup_logits + self.tau * torch.log(curr_weight + 1e-9) ) / self.supt, anchor_dot_contrast), dim=1)
             else:
                 anchor_dot_contrast = torch.cat(( (sup_logits) / self.supt, anchor_dot_contrast), dim=1)
 
@@ -890,10 +910,6 @@ class MultiExpertPaCoLoss(nn.Module):
 
             # compute mean of log-likelihood over positive
             mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
-
-            # 计算正样本的平均对数似然
-            loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-            loss = loss.mean()
 
             # loss
             loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos

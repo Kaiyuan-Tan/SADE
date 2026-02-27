@@ -241,7 +241,7 @@ class PaCoTrainer(BaseTrainer):
 
                 loss, expert_losses = self.criterion(all_features, target, all_logits)
                 ce_loss = torch.tensor(expert_losses[0]).to(self.device) # 以专家1作为代表或均值
-                supcon_loss = torch.tensor(sum(expert_losses)).to(self.device) # 仅用于占位记录
+                supcon_loss = torch.tensor(expert_losses[1]).to(self.device) # 仅用于占位记录
 
             if not use_fp16:
                 loss.backward()

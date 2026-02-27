@@ -36,7 +36,8 @@
         "args":{
              "alpha": 0.05,
              "smooth": 0.1,
-             "K": 8192
+             "K": 8192,
+             "tau": 2
         }
     },
     "metrics": [
@@ -45,14 +46,14 @@
     "lr_scheduler": {
         "type": "CosineAnnealingLR",
         "args": {
-            "T_max": 180,
+            "T_max": 270,
             "eta_min": 0
         }
     },
     "trainer": {
-        "epochs": 180,
-        "save_dir": "saved/imagenet/paco_e180_inv2_bs256_lr0.025",
-        "save_period": 180,
+        "epochs": 270,
+        "save_dir": "saved/imagenet/paco_e270_inv2_bs64_lr0.025",
+        "save_period": 270,
         "verbosity": 2,
         "monitor": "max val_accuracy",
         "tensorboard": false
